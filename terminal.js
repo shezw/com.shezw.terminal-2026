@@ -252,9 +252,11 @@ const Terminal = (() => {
   }
 
   function renderLs(items, longFormat) {
+    const normalizedItems = normalizeLsItems(items);
+
     if (longFormat) {
-      appendOutput(`total ${items.length}`, 'dim');
-      for (const item of items) {
+      appendOutput(`total ${normalizedItems.length}`, 'dim');
+      for (const item of normalizedItems) {
         const type = item.isExec ? '-rwxr-xr-x' : (item.isDir ? 'drwxr-xr-x' : '-rw-r--r--');
         const size = formatSize(item.size || 0);
         const date = 'Mar 29 00:00';
@@ -262,11 +264,31 @@ const Terminal = (() => {
         appendOutput(`${type}  1 visitor visitor  ${size.padStart(6)}  ${date}  ${item.name}`, cls);
       }
     } else {
-      for (const item of items) {
+      for (const item of normalizedItems) {
         const cls = item.isDir ? 'dir' : (item.isExec ? 'exec' : 'file');
         appendOutput(item.name, cls);
       }
     }
+  }
+
+  function normalizeLsItems(items) {
+    return items.map(item => {
+      if (typeof item === 'string') {
+        return {
+          name: item,
+          isDir: item.endsWith('/'),
+          isExec: false,
+          size: 0
+        };
+      }
+
+      return {
+        name: item.name || item.title || '',
+        isDir: Boolean(item.isDir),
+        isExec: Boolean(item.isExec),
+        size: Number(item.size || 0)
+      };
+    }).filter(item => item.name);
   }
 
   function formatSize(bytes) {
@@ -295,22 +317,20 @@ const Terminal = (() => {
       return;
     }
 
-    const fileId = VFS.getFileId(dirSegments, filename);
-    if (!fileId) {
-      // Try fetching file list first
+    const existsInCache = VFS.fileExistsInCache(dirSegments, filename);
+    if (!existsInCache) {
       fetchFileList(dirSegments, true).then(() => {
-        const id = VFS.getFileId(dirSegments, filename);
-        if (!id) {
+        if (!VFS.fileExistsInCache(dirSegments, filename)) {
           appendOutput(`cat: ${filename}: No such file`, 'error');
           updatePrompt();
           scrollToBottom();
           return;
         }
-        fetchAndDisplayFile(blogRel, id, 'cat');
+        fetchAndDisplayList(blogRel, 'cat');
       });
       return;
     }
-    fetchAndDisplayFile(blogRel, fileId, 'cat');
+    fetchAndDisplayList(blogRel, 'cat');
   }
 
   function cmdView(args) {
@@ -332,21 +352,20 @@ const Terminal = (() => {
       return;
     }
 
-    const fileId = VFS.getFileId(dirSegments, filename);
-    if (!fileId) {
+    const existsInCache = VFS.fileExistsInCache(dirSegments, filename);
+    if (!existsInCache) {
       fetchFileList(dirSegments, true).then(() => {
-        const id = VFS.getFileId(dirSegments, filename);
-        if (!id) {
+        if (!VFS.fileExistsInCache(dirSegments, filename)) {
           appendOutput(`view: ${filename}: No such file`, 'error');
           updatePrompt();
           scrollToBottom();
           return;
         }
-        fetchAndDisplayFile(blogRel, id, 'view');
+        fetchAndDisplayList(blogRel, 'view');
       });
       return;
     }
-    fetchAndDisplayFile(blogRel, fileId, 'view');
+    fetchAndDisplayList(blogRel, 'view');
   }
 
   function cmdLogin() {
@@ -404,10 +423,10 @@ const Terminal = (() => {
   /**
    * Parse the list.md format:
    * - title
-   * id
+   * size
    *
    * - title2
-   * id2
+   * size2
    */
   function parseFileList(text) {
     const files = [];
@@ -418,16 +437,15 @@ const Terminal = (() => {
       if (trimmed.startsWith('- ')) {
         currentTitle = trimmed.slice(2).trim();
       } else if (currentTitle && /^\d+$/.test(trimmed)) {
-        files.push({ title: currentTitle, id: trimmed, size: 0 });
+        files.push({ title: currentTitle, size: Number(trimmed) });
         currentTitle = null;
       }
     }
-    // Try to estimate sizes from IDs (use id as a rough byte hint)
     return files;
   }
 
-  async function fetchAndDisplayFile(blogRel, fileId, mode) {
-    const url = `${location.protocol}//${HOSTNAME}/blog/${blogRel}/${fileId}.md`;
+  async function fetchAndDisplayList(blogRel, mode) {
+    const url = `./blog/${blogRel}/list.md`;
     try {
       const resp = await fetch(url);
       if (!resp.ok) {
