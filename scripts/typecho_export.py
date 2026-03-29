@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
     export_parser.add_argument("--user", default="root", help="MySQL user.")
     export_parser.add_argument("--password", default="root", help="MySQL password.")
     export_parser.add_argument("--database", default="typecho", help="Database name.")
-    export_parser.add_argument("--table-prefix", default="typecho_", help="Typecho table prefix.")
+    export_parser.add_argument("--table-prefix", default="auto", help="Typecho table prefix, or 'auto' to detect it.")
     export_parser.add_argument("--mapping", default=str(DEFAULT_MAPPING_FILE), help="Category mapping JSON file.")
     export_parser.add_argument("--output", default=str(DEFAULT_EXPORT_ROOT), help="Export root directory.")
     export_parser.add_argument("--site-domain", action="append", default=[], help="Internal site domain used for resource audit. Repeatable.")
@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     full_parser.add_argument("--user", default="root", help="Database user.")
     full_parser.add_argument("--password", default="root", help="Database password.")
     full_parser.add_argument("--port", type=int, default=3307, help="Published local port.")
-    full_parser.add_argument("--table-prefix", default="typecho_", help="Typecho table prefix.")
+    full_parser.add_argument("--table-prefix", default="auto", help="Typecho table prefix, or 'auto' to detect it.")
     full_parser.add_argument("--mapping", default=str(DEFAULT_MAPPING_FILE), help="Category mapping JSON file.")
     full_parser.add_argument("--output", default=str(DEFAULT_EXPORT_ROOT), help="Export root directory.")
     full_parser.add_argument("--site-domain", action="append", default=[], help="Internal site domain used for resource audit. Repeatable.")
@@ -144,6 +144,29 @@ def connect_mysql(args: argparse.Namespace):
         cursorclass=DictCursor,
         autocommit=True,
     )
+
+
+def detect_table_prefix(connection, requested_prefix: str) -> str:
+    if requested_prefix and requested_prefix != "auto":
+        return requested_prefix
+
+    with connection.cursor() as cursor:
+        cursor.execute("SHOW TABLES")
+        rows = cursor.fetchall()
+
+    candidates: list[str] = []
+    for row in rows:
+        table_name = next(iter(row.values()))
+        if table_name.endswith("contents"):
+            candidates.append(table_name[: -len("contents")])
+
+    preferred = [prefix for prefix in candidates if prefix]
+    for prefix in preferred + [""]:
+        needed = {f"{prefix}contents", f"{prefix}metas", f"{prefix}relationships"}
+        if needed.issubset({next(iter(row.values())) for row in rows}):
+            return prefix
+
+    raise RuntimeError("Unable to detect Typecho table prefix. Use --table-prefix explicitly.")
 
 
 def fetch_posts(connection, table_prefix: str) -> list[Post]:
@@ -392,7 +415,8 @@ def export_posts(args: argparse.Namespace) -> int:
 
     connection = connect_mysql(args)
     try:
-        posts = fetch_posts(connection, args.table_prefix)
+        table_prefix = detect_table_prefix(connection, args.table_prefix)
+        posts = fetch_posts(connection, table_prefix)
     finally:
         connection.close()
 
@@ -518,10 +542,10 @@ def wait_for_mariadb(args: argparse.Namespace, timeout_seconds: int = 60) -> Non
     deadline = time.time() + timeout_seconds
     command = [
         "docker", "exec", args.container,
-        "mariadb-admin", "ping",
+        "mariadb",
         f"-u{args.user}",
         f"-p{args.password}",
-        "--silent",
+        "-e", "SELECT 1;",
     ]
     while time.time() < deadline:
         result = subprocess.run(command, capture_output=True)

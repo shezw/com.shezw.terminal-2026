@@ -5,7 +5,7 @@
 const Terminal = (() => {
   const HOSTNAME = location.hostname || 'shezw.com';
   const USERNAME = 'visitor';
-  const VERSION  = '0.1.2';
+  const VERSION  = '0.1.3';
 
   // Login credentials store (placeholder)
   const credentials = {

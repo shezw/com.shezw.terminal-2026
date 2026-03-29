@@ -25,6 +25,8 @@ Install Python dependencies:
 python3 -m pip install -r requirements.txt
 ```
 
+Before running the import flow, make sure Docker is available and the daemon is running.
+
 Start a temporary MariaDB container and import the dump:
 
 ```bash
@@ -50,6 +52,8 @@ python3 scripts/typecho_export.py full-export \
 	--site-domain www.shezw.com \
 	--clean
 ```
+
+The exporter automatically detects the Typecho table prefix when `--table-prefix` is left as `auto`.
 
 Outputs:
 
