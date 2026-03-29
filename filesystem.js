@@ -49,7 +49,15 @@ const VFS = (() => {
   };
 
   // File list cache: key = absolute path, value = array of {title, id}
-  const fileCache = {};
+  const fileCache = {
+    '/about': [
+      { title: 'cn', size: 0, createdAt: 0, updatedAt: 0 },
+      { title: 'en', size: 0, createdAt: 0, updatedAt: 0 },
+      { title: 'fr', size: 0, createdAt: 0, updatedAt: 0 },
+      { title: 'jp', size: 0, createdAt: 0, updatedAt: 0 },
+      { title: 'kr', size: 0, createdAt: 0, updatedAt: 0 }
+    ]
+  };
 
   // Current working directory as array of segments, e.g. ['blog','dev','ios']
   let cwd = [];
@@ -149,13 +157,23 @@ const VFS = (() => {
   }
 
   /**
-   * Get the blog-relative path for remote fetching.
-   * segments should be under /blog/...
+   * Get content location info for fetchable content directories.
    */
-  function getBlogRelPath(segments) {
+  function getContentPath(segments) {
     if (segments.length >= 2 && segments[0] === 'blog') {
-      return segments.slice(1).join('/');
+      return {
+        base: 'blog',
+        relPath: segments.slice(1).join('/')
+      };
     }
+
+    if (segments.length === 1 && segments[0] === 'about') {
+      return {
+        base: 'about',
+        relPath: ''
+      };
+    }
+
     return null;
   }
 
@@ -212,7 +230,7 @@ const VFS = (() => {
     isDir,
     isLeaf,
     listDir,
-    getBlogRelPath,
+    getContentPath,
     EXEC_FILE,
     cacheFiles,
     getCachedFiles,

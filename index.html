@@ -37,7 +37,6 @@
     min-height: 1.5em;
   }
 
-  /* ── Line Types ─────────────────────────── */
   .welcome    { color: #5fd75f; }
   .command-echo { color: #888; }
   .dir        { color: #5f87ff; font-weight: bold; }
@@ -74,6 +73,33 @@
   }
   .md-bold   { color: #ffffff; font-weight: bold; }
   .md-italic { color: #d4d4d4; font-style: italic; }
+  .md-link,
+  .plain-link {
+    color: #87afff;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    word-break: break-word;
+  }
+  .md-link:hover,
+  .plain-link:hover {
+    color: #afd7ff;
+  }
+  .md-image-wrap {
+    margin: 8px 0;
+  }
+  .md-image-link {
+    display: inline-block;
+    max-width: 100%;
+  }
+  .md-image {
+    display: block;
+    width: auto;
+    max-width: min(100%, 1200px);
+    max-height: calc(100vh - 48px);
+    height: auto;
+    object-fit: contain;
+    border-radius: 4px;
+  }
 
   /* ── Input Line ─────────────────────────── */
   #input-line {
@@ -94,11 +120,18 @@
     background: transparent;
     border: none;
     outline: none;
+    resize: none;
+    overflow: hidden;
     color: #d4d4d4;
     font-family: inherit;
     font-size: inherit;
     caret-color: #5fd75f;
     line-height: 1.5;
+    min-height: 1.5em;
+    padding: 0;
+  }
+  #input.masked {
+    -webkit-text-security: disc;
   }
 
   /* ── Blinking cursor effect ─────────────── */
@@ -118,7 +151,7 @@
   <div id="output"></div>
   <div id="input-line">
     <span id="prompt"></span>
-    <input id="input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" autofocus />
+    <textarea id="input" rows="1" name="terminal-console" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" enterkeyhint="done" autofocus></textarea>
   </div>
 </div>
 <script src="filesystem.js"></script>

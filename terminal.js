@@ -26,6 +26,25 @@ const Terminal = (() => {
   // Tab completion file cache reference
   let tabCandidates = [];
 
+  function setInputMasked(masked) {
+    termInput.classList.toggle('masked', masked);
+    termInput.setAttribute('aria-label', masked ? 'Terminal secure entry' : 'Terminal command line');
+  }
+
+  function setInputValue(value) {
+    termInput.value = value;
+    syncInputHeight();
+  }
+
+  function clearInput() {
+    setInputValue('');
+  }
+
+  function syncInputHeight() {
+    termInput.style.height = 'auto';
+    termInput.style.height = `${Math.max(termInput.scrollHeight, 21)}px`;
+  }
+
   function init() {
     termOutput    = document.getElementById('output');
     termInput     = document.getElementById('input');
@@ -33,10 +52,13 @@ const Terminal = (() => {
     termInputLine = document.getElementById('input-line');
 
     termInput.addEventListener('keydown', onKeyDown);
+    termInput.addEventListener('input', syncInputHeight);
     document.addEventListener('click', () => termInput.focus());
 
     updatePrompt();
+    setInputMasked(false);
     printWelcome();
+    syncInputHeight();
     termInput.focus();
   }
 
@@ -75,22 +97,22 @@ const Terminal = (() => {
     if (e.key === 'Enter') {
       e.preventDefault();
       const raw = termInput.value;
-      termInput.value = '';
+      clearInput();
       handleInput(raw);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (history.length > 0) {
         if (historyIndex < history.length - 1) historyIndex++;
-        termInput.value = history[history.length - 1 - historyIndex];
+        setInputValue(history[history.length - 1 - historyIndex]);
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (historyIndex > 0) {
         historyIndex--;
-        termInput.value = history[history.length - 1 - historyIndex];
+        setInputValue(history[history.length - 1 - historyIndex]);
       } else {
         historyIndex = -1;
-        termInput.value = '';
+        clearInput();
       }
     } else if (e.key === 'Tab') {
       e.preventDefault();
@@ -99,11 +121,11 @@ const Terminal = (() => {
       e.preventDefault();
       const promptText = termPrompt.textContent;
       appendOutput(promptText + termInput.value + '^C', 'command-echo');
-      termInput.value = '';
+      clearInput();
       if (inputMode !== 'command') {
         inputMode = 'command';
         loginBuffer = {};
-        termInput.type = 'text';
+        setInputMasked(false);
       }
       updatePrompt();
     } else if (e.key === 'l' && e.ctrlKey) {
@@ -118,14 +140,14 @@ const Terminal = (() => {
       loginBuffer.username = raw;
       inputMode = 'login-pass';
       termPrompt.textContent = 'Password: ';
-      termInput.type = 'password';
+      setInputMasked(true);
       return;
     }
 
     if (inputMode === 'login-pass') {
       appendOutput('********');
       loginBuffer.password = raw;
-      termInput.type = 'text';
+      setInputMasked(false);
       inputMode = 'command';
       doLogin(loginBuffer.username, loginBuffer.password);
       loginBuffer = {};
@@ -392,7 +414,7 @@ const Terminal = (() => {
       return;
     }
 
-    await fetchAndDisplayFile(resolved.blogRel, resolved.filename, 'cat');
+    await fetchAndDisplayFile(resolved.contentPath, resolved.filename, 'cat');
   }
 
   async function cmdView(args) {
@@ -413,7 +435,7 @@ const Terminal = (() => {
       return;
     }
 
-    await fetchAndDisplayFile(resolved.blogRel, resolved.filename, 'view');
+    await fetchAndDisplayFile(resolved.contentPath, resolved.filename, 'view');
   }
 
   function cmdLogin() {
@@ -447,10 +469,16 @@ const Terminal = (() => {
   // ── Remote fetching ───────────────────────────
 
   async function fetchFileList(segments, silent) {
-    const blogRel = VFS.getBlogRelPath(segments);
-    if (!blogRel) return null;
+    const contentPath = VFS.getContentPath(segments);
+    if (!contentPath) return null;
 
-    const url = `./blog/${blogRel}/list.md`;
+    if (contentPath.base === 'about') {
+      const cached = VFS.getCachedFiles(segments) || [];
+      tabCandidates = cached.map(f => f.title);
+      return cached;
+    }
+
+    const url = `./${contentPath.base}/${contentPath.relPath}/list.md`;
     try {
       const resp = await fetch(url);
       if (!resp.ok) {
@@ -498,8 +526,8 @@ const Terminal = (() => {
     return files;
   }
 
-  async function fetchAndDisplayFile(blogRel, filename, mode) {
-    const url = buildContentFileUrl(blogRel, filename);
+  async function fetchAndDisplayFile(contentPath, filename, mode) {
+    const url = buildContentFileUrl(contentPath, filename);
     try {
       const resp = await fetch(url);
       if (!resp.ok) {
@@ -539,9 +567,9 @@ const Terminal = (() => {
       return { ok: false, message: error };
     }
 
-    const blogRel = VFS.getBlogRelPath(dirSegments);
-    if (!blogRel) {
-      return { ok: false, message: 'cannot determine blog path' };
+    const contentPath = VFS.getContentPath(dirSegments);
+    if (!contentPath) {
+      return { ok: false, message: 'cannot determine content path' };
     }
 
     let existsInCache = VFS.fileExistsInCache(dirSegments, filename);
@@ -554,7 +582,7 @@ const Terminal = (() => {
       return { ok: false, message: 'No such file' };
     }
 
-    return { ok: true, kind: 'file', dirSegments, blogRel, filename };
+    return { ok: true, kind: 'file', dirSegments, contentPath, filename };
   }
 
   function splitContentTarget(target) {
@@ -584,10 +612,13 @@ const Terminal = (() => {
     return { dirSegments, filename };
   }
 
-  function buildContentFileUrl(blogRel, filename) {
-    const encodedParts = [...blogRel.split('/').filter(Boolean), `${filename}.md`]
-      .map(part => encodeURIComponent(part));
-    return `./blog/${encodedParts.join('/')}`;
+  function buildContentFileUrl(contentPath, filename) {
+    const encodedParts = [
+      contentPath.base,
+      ...contentPath.relPath.split('/').filter(Boolean),
+      `${filename}.md`
+    ].map(part => encodeURIComponent(part));
+    return `./${encodedParts.join('/')}`;
   }
 
   async function displayFileCandidates(dirSegments, prefix) {
@@ -615,7 +646,7 @@ const Terminal = (() => {
   function displayRaw(text) {
     const lines = text.split('\n');
     for (const line of lines) {
-      appendOutput(line);
+      appendOutputHTML(`<div>${renderPlainText(line)}</div>`);
     }
   }
 
@@ -635,36 +666,121 @@ const Terminal = (() => {
         continue;
       }
 
+      const imageHTML = renderMarkdownImage(line);
+      if (imageHTML) {
+        appendOutputHTML(imageHTML);
+        continue;
+      }
+
       // Headings
       if (line.startsWith('######')) {
-        appendOutputHTML(`<div class="md-h6">${escapeHTML(line.slice(6).trim())}</div>`);
+        appendOutputHTML(`<div class="md-h6">${renderInlineMarkdown(line.slice(6).trim())}</div>`);
       } else if (line.startsWith('#####')) {
-        appendOutputHTML(`<div class="md-h5">${escapeHTML(line.slice(5).trim())}</div>`);
+        appendOutputHTML(`<div class="md-h5">${renderInlineMarkdown(line.slice(5).trim())}</div>`);
       } else if (line.startsWith('####')) {
-        appendOutputHTML(`<div class="md-h4">${escapeHTML(line.slice(4).trim())}</div>`);
+        appendOutputHTML(`<div class="md-h4">${renderInlineMarkdown(line.slice(4).trim())}</div>`);
       } else if (line.startsWith('###')) {
-        appendOutputHTML(`<div class="md-h3">${escapeHTML(line.slice(3).trim())}</div>`);
+        appendOutputHTML(`<div class="md-h3">${renderInlineMarkdown(line.slice(3).trim())}</div>`);
       } else if (line.startsWith('##')) {
-        appendOutputHTML(`<div class="md-h2">${escapeHTML(line.slice(2).trim())}</div>`);
+        appendOutputHTML(`<div class="md-h2">${renderInlineMarkdown(line.slice(2).trim())}</div>`);
       } else if (line.startsWith('#')) {
-        appendOutputHTML(`<div class="md-h1">${escapeHTML(line.slice(1).trim())}</div>`);
+        appendOutputHTML(`<div class="md-h1">${renderInlineMarkdown(line.slice(1).trim())}</div>`);
       } else if (line.startsWith('---') || line.startsWith('***') || line.startsWith('___')) {
         appendOutputHTML('<div class="md-hr">────────────────────────────────</div>');
       } else if (line.startsWith('> ')) {
-        appendOutputHTML(`<div class="md-quote">│ ${escapeHTML(line.slice(2))}</div>`);
+        appendOutputHTML(`<div class="md-quote">│ ${renderInlineMarkdown(line.slice(2))}</div>`);
       } else if (/^\s*[-*]\s/.test(line)) {
-        appendOutputHTML(`<div class="md-list">  • ${escapeHTML(line.replace(/^\s*[-*]\s/, ''))}</div>`);
+        appendOutputHTML(`<div class="md-list">  • ${renderInlineMarkdown(line.replace(/^\s*[-*]\s/, ''))}</div>`);
       } else if (/^\s*\d+\.\s/.test(line)) {
-        appendOutputHTML(`<div class="md-list">  ${escapeHTML(line)}</div>`);
+        appendOutputHTML(`<div class="md-list">  ${renderInlineMarkdown(line)}</div>`);
       } else {
-        // Inline styles
-        let html = escapeHTML(line);
-        html = html.replace(/`([^`]+)`/g, '<span class="md-inline-code">$1</span>');
-        html = html.replace(/\*\*([^*]+)\*\*/g, '<span class="md-bold">$1</span>');
-        html = html.replace(/\*([^*]+)\*/g, '<span class="md-italic">$1</span>');
-        appendOutputHTML(`<div class="md-text">${html}</div>`);
+        appendOutputHTML(`<div class="md-text">${renderInlineMarkdown(line)}</div>`);
       }
     }
+  }
+
+  function renderInlineMarkdown(text) {
+    const tokens = [];
+    let html = escapeHTML(text);
+
+    html = html.replace(/`([^`]+)`/g, (_, code) => {
+      return createHTMLToken(tokens, `<span class="md-inline-code">${code}</span>`);
+    });
+
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => {
+      return createHTMLToken(tokens, buildLinkHTML(url, label, 'md-link'));
+    });
+
+    html = linkifyEscapedText(html, 'md-link');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<span class="md-bold">$1</span>');
+    html = html.replace(/\*([^*]+)\*/g, '<span class="md-italic">$1</span>');
+    return restoreHTMLTokens(html, tokens);
+  }
+
+  function renderPlainText(text) {
+    return linkifyEscapedText(escapeHTML(text), 'plain-link');
+  }
+
+  function renderMarkdownImage(line) {
+    const trimmed = line.trim();
+    const markdownMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)$/);
+    if (markdownMatch) {
+      return buildImageHTML(markdownMatch[2], markdownMatch[1], markdownMatch[3]);
+    }
+
+    const htmlMatch = trimmed.match(/^<img\b[^>]*src=["']([^"']+)["'][^>]*>$/i);
+    if (!htmlMatch) {
+      return '';
+    }
+
+    const altMatch = trimmed.match(/\balt=["']([^"']*)["']/i);
+    const titleMatch = trimmed.match(/\btitle=["']([^"']*)["']/i);
+    return buildImageHTML(htmlMatch[1], altMatch ? altMatch[1] : '', titleMatch ? titleMatch[1] : '');
+  }
+
+  function buildImageHTML(src, alt, title) {
+    const safeSrc = escapeAttribute(src);
+    const safeAlt = escapeAttribute(alt || title || 'image');
+    const safeTitle = title ? ` title="${escapeAttribute(title)}"` : '';
+    return `<div class="md-image-wrap"><a class="md-image-link" href="${safeSrc}" target="_blank" rel="noopener noreferrer"><img class="md-image" src="${safeSrc}" alt="${safeAlt}"${safeTitle}></a></div>`;
+  }
+
+  function linkifyEscapedText(text, className) {
+    return text.replace(/https?:\/\/[^\s<]+/g, url => {
+      const { cleanUrl, trailing } = splitTrailingPunctuation(url);
+      return `${buildLinkHTML(cleanUrl, cleanUrl, className)}${trailing}`;
+    });
+  }
+
+  function splitTrailingPunctuation(url) {
+    const match = url.match(/^(.*?)([),.;!?]+)?$/);
+    if (!match) {
+      return { cleanUrl: url, trailing: '' };
+    }
+    return {
+      cleanUrl: match[1] || url,
+      trailing: match[2] || ''
+    };
+  }
+
+  function buildLinkHTML(url, label, className) {
+    const safeUrl = escapeAttribute(url);
+    const safeLabel = escapeHTML(label);
+    return `<a class="${className}" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`;
+  }
+
+  function createHTMLToken(tokens, html) {
+    const token = `@@HTML_TOKEN_${tokens.length}@@`;
+    tokens.push({ token, html });
+    return token;
+  }
+
+  function restoreHTMLTokens(text, tokens) {
+    let restored = text;
+    for (const token of tokens) {
+      restored = restored.replaceAll(token.token, token.html);
+    }
+    return restored;
   }
 
   function escapeHTML(str) {
@@ -673,6 +789,10 @@ const Terminal = (() => {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function escapeAttribute(str) {
+    return escapeHTML(str).replace(/'/g, '&#39;');
   }
 
   // ── Tab completion ────────────────────────────
@@ -685,7 +805,7 @@ const Terminal = (() => {
       const cmds = ['help', 'ls', 'cd', 'cat', 'view', 'login', 'logout', 'clear', 'pwd', 'whoami'];
       const match = cmds.filter(c => c.startsWith(parts[0]));
       if (match.length === 1) {
-        termInput.value = match[0] + ' ';
+        setInputValue(match[0] + ' ');
       } else if (match.length > 1) {
         appendOutput(termPrompt.textContent + value, 'command-echo');
         appendOutput(match.join('  '));
@@ -697,7 +817,7 @@ const Terminal = (() => {
     const partial = getCompletionTarget(value, parts);
     const candidates = await getPathCandidates(partial);
     if (candidates.length === 1) {
-      termInput.value = replaceCompletionTarget(value, partial, candidates[0]);
+      setInputValue(replaceCompletionTarget(value, partial, candidates[0]));
     } else if (candidates.length > 1) {
       appendOutput(termPrompt.textContent + value, 'command-echo');
       appendOutput(candidates.join('  '));
