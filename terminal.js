@@ -5,7 +5,7 @@
 const Terminal = (() => {
   const HOSTNAME = location.hostname || 'shezw.com';
   const USERNAME = 'visitor';
-  const VERSION  = '0.1.1';
+  const VERSION  = '0.1.2';
 
   // Login credentials store (placeholder)
   const credentials = {
@@ -94,7 +94,7 @@ const Terminal = (() => {
       }
     } else if (e.key === 'Tab') {
       e.preventDefault();
-      handleTab();
+      void handleTab();
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault();
       const promptText = termPrompt.textContent;
@@ -163,8 +163,8 @@ const Terminal = (() => {
       case 'help':    cmdHelp(); break;
       case 'ls':      cmdLs(args); break;
       case 'cd':      cmdCd(args); break;
-      case 'cat':     cmdCat(args); break;
-      case 'view':    cmdView(args); break;
+      case 'cat':     void cmdCat(args); return;
+      case 'view':    void cmdView(args); return;
       case 'login':   cmdLogin(); return;
       case 'logout':  cmdLogout(); break;
       case 'clear':   termOutput.innerHTML = ''; updatePrompt(); return;
@@ -374,75 +374,46 @@ const Terminal = (() => {
     return parts;
   }
 
-  function cmdCat(args) {
+  async function cmdCat(args) {
     if (args.length === 0) {
       appendOutput('cat: missing filename', 'error');
       return;
     }
-    const filename = args.join(' ');
-    const dirSegments = VFS.getCwd();
 
-    // Check if we're in a blog leaf directory
-    if (!VFS.isLeaf(dirSegments)) {
-      appendOutput(`cat: ${filename}: not in a content directory`, 'error');
+    const target = args.join(' ');
+    const resolved = await resolveContentRequest(target);
+    if (!resolved.ok) {
+      appendOutput(`cat: ${target}: ${resolved.message}`, 'error');
       return;
     }
 
-    const blogRel = VFS.getBlogRelPath(dirSegments);
-    if (!blogRel) {
-      appendOutput(`cat: ${filename}: cannot determine blog path`, 'error');
+    if (resolved.kind === 'directory') {
+      await displayFileCandidates(resolved.dirSegments, target);
       return;
     }
 
-    const existsInCache = VFS.fileExistsInCache(dirSegments, filename);
-    if (!existsInCache) {
-      fetchFileList(dirSegments, true).then(() => {
-        if (!VFS.fileExistsInCache(dirSegments, filename)) {
-          appendOutput(`cat: ${filename}: No such file`, 'error');
-          updatePrompt();
-          scrollToBottom();
-          return;
-        }
-        fetchAndDisplayList(blogRel, 'cat');
-      });
-      return;
-    }
-    fetchAndDisplayList(blogRel, 'cat');
+    await fetchAndDisplayFile(resolved.blogRel, resolved.filename, 'cat');
   }
 
-  function cmdView(args) {
+  async function cmdView(args) {
     if (args.length === 0) {
       appendOutput('view: missing filename', 'error');
       return;
     }
-    const filename = args.join(' ');
-    const dirSegments = VFS.getCwd();
 
-    if (!VFS.isLeaf(dirSegments)) {
-      appendOutput(`view: ${filename}: not in a content directory`, 'error');
+    const target = args.join(' ');
+    const resolved = await resolveContentRequest(target);
+    if (!resolved.ok) {
+      appendOutput(`view: ${target}: ${resolved.message}`, 'error');
       return;
     }
 
-    const blogRel = VFS.getBlogRelPath(dirSegments);
-    if (!blogRel) {
-      appendOutput(`view: ${filename}: cannot determine blog path`, 'error');
+    if (resolved.kind === 'directory') {
+      await displayFileCandidates(resolved.dirSegments, target);
       return;
     }
 
-    const existsInCache = VFS.fileExistsInCache(dirSegments, filename);
-    if (!existsInCache) {
-      fetchFileList(dirSegments, true).then(() => {
-        if (!VFS.fileExistsInCache(dirSegments, filename)) {
-          appendOutput(`view: ${filename}: No such file`, 'error');
-          updatePrompt();
-          scrollToBottom();
-          return;
-        }
-        fetchAndDisplayList(blogRel, 'view');
-      });
-      return;
-    }
-    fetchAndDisplayList(blogRel, 'view');
+    await fetchAndDisplayFile(resolved.blogRel, resolved.filename, 'view');
   }
 
   function cmdLogin() {
@@ -527,8 +498,8 @@ const Terminal = (() => {
     return files;
   }
 
-  async function fetchAndDisplayList(blogRel, mode) {
-    const url = `./blog/${blogRel}/list.md`;
+  async function fetchAndDisplayFile(blogRel, filename, mode) {
+    const url = buildContentFileUrl(blogRel, filename);
     try {
       const resp = await fetch(url);
       if (!resp.ok) {
@@ -545,6 +516,97 @@ const Terminal = (() => {
       }
     } catch (err) {
       appendOutput(`fetch error: ${err.message}`, 'error');
+    }
+    updatePrompt();
+    scrollToBottom();
+  }
+
+  async function resolveContentRequest(target) {
+    if (target.endsWith('/')) {
+      const dirTarget = target.replace(/\/+$/, '');
+      const dirSegments = VFS.resolve(dirTarget || '/');
+      if (!dirSegments || !VFS.isDir(dirSegments)) {
+        return { ok: false, message: 'No such directory' };
+      }
+      if (!VFS.isLeaf(dirSegments)) {
+        return { ok: false, message: 'not in a content directory' };
+      }
+      return { ok: true, kind: 'directory', dirSegments };
+    }
+
+    const { dirSegments, filename, error } = splitContentTarget(target);
+    if (error) {
+      return { ok: false, message: error };
+    }
+
+    const blogRel = VFS.getBlogRelPath(dirSegments);
+    if (!blogRel) {
+      return { ok: false, message: 'cannot determine blog path' };
+    }
+
+    let existsInCache = VFS.fileExistsInCache(dirSegments, filename);
+    if (!existsInCache) {
+      await fetchFileList(dirSegments, true);
+      existsInCache = VFS.fileExistsInCache(dirSegments, filename);
+    }
+
+    if (!existsInCache) {
+      return { ok: false, message: 'No such file' };
+    }
+
+    return { ok: true, kind: 'file', dirSegments, blogRel, filename };
+  }
+
+  function splitContentTarget(target) {
+    const lastSlash = target.lastIndexOf('/');
+    let dirSegments;
+    let filename;
+
+    if (lastSlash >= 0) {
+      const dirPart = target.slice(0, lastSlash) || '/';
+      filename = target.slice(lastSlash + 1);
+      dirSegments = VFS.resolve(dirPart);
+    } else {
+      dirSegments = VFS.getCwd();
+      filename = target;
+    }
+
+    if (!filename) {
+      return { error: 'missing filename' };
+    }
+    if (!dirSegments || !VFS.isDir(dirSegments)) {
+      return { error: 'No such directory' };
+    }
+    if (!VFS.isLeaf(dirSegments)) {
+      return { error: 'not in a content directory' };
+    }
+
+    return { dirSegments, filename };
+  }
+
+  function buildContentFileUrl(blogRel, filename) {
+    const encodedParts = [...blogRel.split('/').filter(Boolean), `${filename}.md`]
+      .map(part => encodeURIComponent(part));
+    return `./blog/${encodedParts.join('/')}`;
+  }
+
+  async function displayFileCandidates(dirSegments, prefix) {
+    let cached = VFS.getCachedFiles(dirSegments);
+    if (!cached) {
+      await fetchFileList(dirSegments, true);
+      cached = VFS.getCachedFiles(dirSegments);
+    }
+
+    if (!cached || cached.length === 0) {
+      appendOutput('(empty)', 'dim');
+      updatePrompt();
+      scrollToBottom();
+      return;
+    }
+
+    const normalizedPrefix = prefix.endsWith('/') ? prefix : `${prefix}/`;
+    for (const file of cached) {
+      appendOutput(`${normalizedPrefix}${file.title}`, 'file');
     }
     updatePrompt();
     scrollToBottom();
@@ -615,9 +677,9 @@ const Terminal = (() => {
 
   // ── Tab completion ────────────────────────────
 
-  function handleTab() {
+  async function handleTab() {
     const value = termInput.value;
-    const parts = value.split(/\s+/);
+    const parts = tokenizeCommand(value);
     if (parts.length <= 1) {
       // Complete command
       const cmds = ['help', 'ls', 'cd', 'cat', 'view', 'login', 'logout', 'clear', 'pwd', 'whoami'];
@@ -632,11 +694,10 @@ const Terminal = (() => {
     }
 
     // Complete path argument
-    const partial = parts[parts.length - 1];
-    const candidates = getPathCandidates(partial);
+    const partial = getCompletionTarget(value, parts);
+    const candidates = await getPathCandidates(partial);
     if (candidates.length === 1) {
-      parts[parts.length - 1] = candidates[0];
-      termInput.value = parts.join(' ');
+      termInput.value = replaceCompletionTarget(value, partial, candidates[0]);
     } else if (candidates.length > 1) {
       appendOutput(termPrompt.textContent + value, 'command-echo');
       appendOutput(candidates.join('  '));
@@ -644,7 +705,7 @@ const Terminal = (() => {
     }
   }
 
-  function getPathCandidates(partial) {
+  async function getPathCandidates(partial) {
     // Get directory and prefix
     const lastSlash = partial.lastIndexOf('/');
     let dirPart, prefix;
@@ -661,8 +722,12 @@ const Terminal = (() => {
 
     const children = VFS.listDir(segments);
     if (!children) {
-      // Leaf dir – use cached file titles
-      const cached = VFS.getCachedFiles(segments);
+      let cached = VFS.getCachedFiles(segments);
+      if (!cached) {
+        await fetchFileList(segments, true);
+        cached = VFS.getCachedFiles(segments);
+      }
+
       if (cached) {
         return cached
           .map(f => f.title)
@@ -678,6 +743,22 @@ const Terminal = (() => {
         if (lastSlash >= 0) return partial.slice(0, lastSlash + 1) + c;
         return c;
       });
+  }
+
+  function getCompletionTarget(value, parts) {
+    const command = parts[0] || '';
+    if ((command === 'cat' || command === 'view') && value.includes(' ')) {
+      return value.slice(value.indexOf(' ') + 1).trimStart();
+    }
+    return parts[parts.length - 1] || '';
+  }
+
+  function replaceCompletionTarget(value, partial, replacement) {
+    const index = value.lastIndexOf(partial);
+    if (index < 0) {
+      return value;
+    }
+    return `${value.slice(0, index)}${replacement}`;
   }
 
   // ── Output helpers ────────────────────────────
