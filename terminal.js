@@ -5,7 +5,7 @@
 const Terminal = (() => {
   const HOSTNAME = location.hostname || 'shezw.com';
   const USERNAME = 'visitor';
-  const VERSION  = '0.1.0';
+  const VERSION  = '0.1.1';
 
   // Login credentials store (placeholder)
   const credentials = {
@@ -146,7 +146,12 @@ const Terminal = (() => {
     history.push(trimmed);
     historyIndex = -1;
 
-    const parts = trimmed.split(/\s+/);
+    const parts = tokenizeCommand(trimmed);
+    if (parts.length === 0) {
+      updatePrompt();
+      return;
+    }
+
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1);
 
@@ -233,7 +238,13 @@ const Terminal = (() => {
       // Need to fetch from remote
       fetchFileList(segments, true).then(files => {
         if (files && files.length > 0) {
-          const items = files.map(f => ({ name: f.title, isDir: false, size: f.size || 0 }));
+          const items = files.map(f => ({
+            name: f.title,
+            isDir: false,
+            size: f.size || 0,
+            createdAt: f.createdAt || 0,
+            updatedAt: f.updatedAt || 0
+          }));
           renderLs(items, longFormat);
         } else {
           appendOutput('(empty)', 'dim');
@@ -259,7 +270,7 @@ const Terminal = (() => {
       for (const item of normalizedItems) {
         const type = item.isExec ? '-rwxr-xr-x' : (item.isDir ? 'drwxr-xr-x' : '-rw-r--r--');
         const size = formatSize(item.size || 0);
-        const date = 'Mar 29 00:00';
+        const date = formatListDate(item.createdAt, item.updatedAt);
         const cls = item.isDir ? 'dir' : (item.isExec ? 'exec' : 'file');
         appendOutput(`${type}  1 visitor visitor  ${size.padStart(6)}  ${date}  ${item.name}`, cls);
       }
@@ -286,9 +297,29 @@ const Terminal = (() => {
         name: item.name || item.title || '',
         isDir: Boolean(item.isDir),
         isExec: Boolean(item.isExec),
-        size: Number(item.size || 0)
+        size: Number(item.size || 0),
+        createdAt: Number(item.createdAt || 0),
+        updatedAt: Number(item.updatedAt || 0)
       };
     }).filter(item => item.name);
+  }
+
+  function formatListDate(createdAt, updatedAt) {
+    const timestamp = updatedAt || createdAt;
+    if (!timestamp) return '--- -- --:--';
+
+    const date = new Date(timestamp * 1000);
+    const now = new Date();
+    const month = date.toLocaleString('en-US', { month: 'short' });
+    const day = String(date.getDate()).padStart(2, ' ');
+
+    if (date.getFullYear() === now.getFullYear()) {
+      const hours = String(date.getHours()).padStart(2, '0');
+      const minutes = String(date.getMinutes()).padStart(2, '0');
+      return `${month} ${day} ${hours}:${minutes}`;
+    }
+
+    return `${month} ${day}  ${date.getFullYear()}`;
   }
 
   function formatSize(bytes) {
@@ -297,12 +328,58 @@ const Terminal = (() => {
     return (bytes / (1024 * 1024)).toFixed(1) + 'M';
   }
 
+  function tokenizeCommand(input) {
+    const parts = [];
+    let current = '';
+    let quote = null;
+
+    for (let index = 0; index < input.length; index++) {
+      const char = input[index];
+
+      if (char === '\\' && index + 1 < input.length) {
+        current += input[index + 1];
+        index += 1;
+        continue;
+      }
+
+      if (quote) {
+        if (char === quote) {
+          quote = null;
+        } else {
+          current += char;
+        }
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        quote = char;
+        continue;
+      }
+
+      if (/\s/.test(char)) {
+        if (current) {
+          parts.push(current);
+          current = '';
+        }
+        continue;
+      }
+
+      current += char;
+    }
+
+    if (current) {
+      parts.push(current);
+    }
+
+    return parts;
+  }
+
   function cmdCat(args) {
     if (args.length === 0) {
       appendOutput('cat: missing filename', 'error');
       return;
     }
-    const filename = args[0];
+    const filename = args.join(' ');
     const dirSegments = VFS.getCwd();
 
     // Check if we're in a blog leaf directory
@@ -338,7 +415,7 @@ const Terminal = (() => {
       appendOutput('view: missing filename', 'error');
       return;
     }
-    const filename = args[0];
+    const filename = args.join(' ');
     const dirSegments = VFS.getCwd();
 
     if (!VFS.isLeaf(dirSegments)) {
@@ -423,10 +500,10 @@ const Terminal = (() => {
   /**
    * Parse the list.md format:
    * - title
-   * size
+   * size,createdAt,updatedAt
    *
    * - title2
-   * size2
+   * size2,createdAt2,updatedAt2
    */
   function parseFileList(text) {
     const files = [];
@@ -436,8 +513,14 @@ const Terminal = (() => {
       const trimmed = line.trim();
       if (trimmed.startsWith('- ')) {
         currentTitle = trimmed.slice(2).trim();
-      } else if (currentTitle && /^\d+$/.test(trimmed)) {
-        files.push({ title: currentTitle, size: Number(trimmed) });
+      } else if (currentTitle && /^\d+(,\d+){0,2}$/.test(trimmed)) {
+        const [size = '0', createdAt = '0', updatedAt = '0'] = trimmed.split(',');
+        files.push({
+          title: currentTitle,
+          size: Number(size),
+          createdAt: Number(createdAt),
+          updatedAt: Number(updatedAt)
+        });
         currentTitle = null;
       }
     }

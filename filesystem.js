@@ -128,7 +128,13 @@ const VFS = (() => {
       // Leaf dir – return cached file list or empty
       const key = '/' + segments.join('/');
       if (fileCache[key]) {
-        return fileCache[key].map(f => ({ name: f.title, isDir: false, size: f.size || 0 }));
+        return fileCache[key].map(f => ({
+          name: f.title,
+          isDir: false,
+          size: f.size || 0,
+          createdAt: f.createdAt || 0,
+          updatedAt: f.updatedAt || 0
+        }));
       }
       return null; // signal: need to fetch
     }
