@@ -7,15 +7,18 @@ const VFS = (() => {
   // Directory tree structure
   // null  = leaf directory (can fetch file list from remote)
   // {}    = directory with children
+  // Special marker for executable files in /bin
+  const EXEC_FILE = '__exec__';
+
   const tree = {
     bin: {
-      cd: null,
-      ls: null,
-      cat: null,
-      view: null,
-      help: null,
-      login: null,
-      logout: null
+      cd: EXEC_FILE,
+      ls: EXEC_FILE,
+      cat: EXEC_FILE,
+      view: EXEC_FILE,
+      help: EXEC_FILE,
+      login: EXEC_FILE,
+      logout: EXEC_FILE
     },
     blog: {
       dev: {
@@ -97,7 +100,9 @@ const VFS = (() => {
   function isDir(segments) {
     if (segments.length === 0) return true; // root
     const node = getNode(segments);
-    return node !== undefined; // null or object are both valid dirs
+    if (node === undefined) return false;
+    if (node === EXEC_FILE) return false; // executable file, not a dir
+    return true; // null or object are both valid dirs
   }
 
   /**
@@ -106,6 +111,7 @@ const VFS = (() => {
   function isLeaf(segments) {
     if (segments.length === 0) return false;
     const node = getNode(segments);
+    if (node === EXEC_FILE) return false;
     return node === null || (typeof node === 'object' && node !== null && Object.keys(node).length === 0);
   }
 
@@ -115,19 +121,23 @@ const VFS = (() => {
    */
   function listDir(segments) {
     if (segments.length === 0) {
-      return Object.keys(tree).map(k => k + '/');
+      return Object.keys(tree).map(k => ({ name: k + '/', isDir: true }));
     }
     const node = getNode(segments);
     if (node === null || (typeof node === 'object' && node !== null && Object.keys(node).length === 0)) {
       // Leaf dir – return cached file list or empty
       const key = '/' + segments.join('/');
       if (fileCache[key]) {
-        return fileCache[key].map(f => f.title);
+        return fileCache[key].map(f => ({ name: f.title, isDir: false, size: f.size || 0 }));
       }
       return null; // signal: need to fetch
     }
     if (typeof node === 'object' && node !== null) {
-      return Object.keys(node).map(k => k + '/');
+      return Object.keys(node).map(k => {
+        const child = node[k];
+        const isExec = child === EXEC_FILE;
+        return { name: isExec ? k : k + '/', isDir: !isExec, isExec };
+      });
     }
     return [];
   }
@@ -197,6 +207,7 @@ const VFS = (() => {
     isLeaf,
     listDir,
     getBlogRelPath,
+    EXEC_FILE,
     cacheFiles,
     getCachedFiles,
     fileExistsInCache,

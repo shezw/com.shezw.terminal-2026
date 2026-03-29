@@ -97,12 +97,15 @@ const Terminal = (() => {
       handleTab();
     } else if (e.key === 'c' && e.ctrlKey) {
       e.preventDefault();
+      const promptText = termPrompt.textContent;
+      appendOutput(promptText + termInput.value + '^C', 'command-echo');
+      termInput.value = '';
       if (inputMode !== 'command') {
         inputMode = 'command';
         loginBuffer = {};
-        appendOutput('^C', 'error');
-        updatePrompt();
+        termInput.type = 'text';
       }
+      updatePrompt();
     } else if (e.key === 'l' && e.ctrlKey) {
       e.preventDefault();
       termOutput.innerHTML = '';
@@ -157,7 +160,7 @@ const Terminal = (() => {
       case 'cd':      cmdCd(args); break;
       case 'cat':     cmdCat(args); break;
       case 'view':    cmdView(args); break;
-      case 'login':   cmdLogin(); break;
+      case 'login':   cmdLogin(); return;
       case 'logout':  cmdLogout(); break;
       case 'clear':   termOutput.innerHTML = ''; updatePrompt(); return;
       case 'pwd':     appendOutput(VFS.getCwdString()); break;
@@ -174,7 +177,7 @@ const Terminal = (() => {
     const lines = [
       'Available commands:',
       '',
-      '  ls [path]      List directory contents',
+      '  ls [-lh] [path] List directory contents',
       '  cd [path]      Change directory',
       '  cat <file>     Display file content (raw)',
       '  view <file>    Display file content (formatted)',
@@ -206,7 +209,18 @@ const Terminal = (() => {
   }
 
   function cmdLs(args) {
-    const target = args.length > 0 ? args[args.length - 1] : '.';
+    // Parse flags and target
+    let longFormat = false;
+    let target = '.';
+    for (const arg of args) {
+      if (arg.startsWith('-')) {
+        if (arg.includes('l')) longFormat = true;
+        // -h is accepted alongside -l, handled in formatting
+      } else {
+        target = arg;
+      }
+    }
+
     const segments = VFS.resolve(target);
     if (segments === null || !VFS.isDir(segments)) {
       appendOutput(`ls: cannot access '${target}': No such directory`, 'error');
@@ -217,11 +231,10 @@ const Terminal = (() => {
 
     if (children === null) {
       // Need to fetch from remote
-      fetchFileList(segments).then(files => {
+      fetchFileList(segments, true).then(files => {
         if (files && files.length > 0) {
-          for (const f of files) {
-            appendOutput(f.title, 'file');
-          }
+          const items = files.map(f => ({ name: f.title, isDir: false, size: f.size || 0 }));
+          renderLs(items, longFormat);
         } else {
           appendOutput('(empty)', 'dim');
         }
@@ -235,9 +248,31 @@ const Terminal = (() => {
       appendOutput('(empty)', 'dim');
       return;
     }
-    for (const ch of children) {
-      appendOutput(ch, ch.endsWith('/') ? 'dir' : 'file');
+    renderLs(children, longFormat);
+  }
+
+  function renderLs(items, longFormat) {
+    if (longFormat) {
+      appendOutput(`total ${items.length}`, 'dim');
+      for (const item of items) {
+        const type = item.isExec ? '-rwxr-xr-x' : (item.isDir ? 'drwxr-xr-x' : '-rw-r--r--');
+        const size = formatSize(item.size || 0);
+        const date = 'Mar 29 00:00';
+        const cls = item.isDir ? 'dir' : (item.isExec ? 'exec' : 'file');
+        appendOutput(`${type}  1 visitor visitor  ${size.padStart(6)}  ${date}  ${item.name}`, cls);
+      }
+    } else {
+      for (const item of items) {
+        const cls = item.isDir ? 'dir' : (item.isExec ? 'exec' : 'file');
+        appendOutput(item.name, cls);
+      }
     }
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + 'B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + 'K';
+    return (bytes / (1024 * 1024)).toFixed(1) + 'M';
   }
 
   function cmdCat(args) {
@@ -263,7 +298,7 @@ const Terminal = (() => {
     const fileId = VFS.getFileId(dirSegments, filename);
     if (!fileId) {
       // Try fetching file list first
-      fetchFileList(dirSegments).then(() => {
+      fetchFileList(dirSegments, true).then(() => {
         const id = VFS.getFileId(dirSegments, filename);
         if (!id) {
           appendOutput(`cat: ${filename}: No such file`, 'error');
@@ -299,7 +334,7 @@ const Terminal = (() => {
 
     const fileId = VFS.getFileId(dirSegments, filename);
     if (!fileId) {
-      fetchFileList(dirSegments).then(() => {
+      fetchFileList(dirSegments, true).then(() => {
         const id = VFS.getFileId(dirSegments, filename);
         if (!id) {
           appendOutput(`view: ${filename}: No such file`, 'error');
@@ -317,6 +352,7 @@ const Terminal = (() => {
   function cmdLogin() {
     if (loggedInUser) {
       appendOutput(`Already logged in as ${loggedInUser}. Use 'logout' first.`, 'warn');
+      updatePrompt();
       return;
     }
     inputMode = 'login-user';
@@ -343,16 +379,15 @@ const Terminal = (() => {
 
   // ── Remote fetching ───────────────────────────
 
-  async function fetchFileList(segments) {
+  async function fetchFileList(segments, silent) {
     const blogRel = VFS.getBlogRelPath(segments);
     if (!blogRel) return null;
 
-    const url = `${location.protocol}//${HOSTNAME}/blog/${blogRel}/list.md`;
+    const url = `./blog/${blogRel}/list.md`;
     try {
-      appendOutput(`Fetching ${url}...`, 'dim');
       const resp = await fetch(url);
       if (!resp.ok) {
-        appendOutput(`fetch error: ${resp.status} ${resp.statusText}`, 'error');
+        if (!silent) appendOutput(`fetch error: ${resp.status} ${resp.statusText}`, 'error');
         return null;
       }
       const text = await resp.text();
@@ -361,7 +396,7 @@ const Terminal = (() => {
       tabCandidates = files.map(f => f.title);
       return files;
     } catch (err) {
-      appendOutput(`fetch error: ${err.message}`, 'error');
+      if (!silent) appendOutput(`fetch error: ${err.message}`, 'error');
       return null;
     }
   }
@@ -383,17 +418,17 @@ const Terminal = (() => {
       if (trimmed.startsWith('- ')) {
         currentTitle = trimmed.slice(2).trim();
       } else if (currentTitle && /^\d+$/.test(trimmed)) {
-        files.push({ title: currentTitle, id: trimmed });
+        files.push({ title: currentTitle, id: trimmed, size: 0 });
         currentTitle = null;
       }
     }
+    // Try to estimate sizes from IDs (use id as a rough byte hint)
     return files;
   }
 
   async function fetchAndDisplayFile(blogRel, fileId, mode) {
     const url = `${location.protocol}//${HOSTNAME}/blog/${blogRel}/${fileId}.md`;
     try {
-      appendOutput(`Fetching ${url}...`, 'dim');
       const resp = await fetch(url);
       if (!resp.ok) {
         appendOutput(`fetch error: ${resp.status} ${resp.statusText}`, 'error');
@@ -536,6 +571,7 @@ const Terminal = (() => {
     }
 
     return children
+      .map(c => c.name)
       .filter(c => c.toLowerCase().startsWith(prefix.toLowerCase()))
       .map(c => {
         if (lastSlash >= 0) return partial.slice(0, lastSlash + 1) + c;
